@@ -89,7 +89,7 @@ void main(void) {
 	// Bulk endpoint 
 	CCyBulkEndPoint *BulkIn = NULL; 
 	int  eptCount = USBDevice->EndPointCount(); 
-
+	/*
 	for(int  i=1; i<eptCount;  i++) 
 	{ 
 		  bool bIn = USBDevice->EndPoints[i]->Address  & 0x80; 
@@ -97,6 +97,9 @@ void main(void) {
 
 		  if (bBulk  && bIn) BulkIn = (CCyBulkEndPoint *) USBDevice->EndPoints[i];  // find bulk IN endpoint
 	} 
+	*/
+
+	BulkIn = (CCyBulkEndPoint *) USBDevice->EndPoints[3];  // find EP6 (in firmwire EP6 is the only valid IN endpoint)
 
 	// Transfer data
 
