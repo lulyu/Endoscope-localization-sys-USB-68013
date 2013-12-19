@@ -1,0 +1,170 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <windows.h>
+#include <memory.h>
+#include <math.h>
+
+#include "CyApi.h"
+
+#define BULKS_PER_TIME 4 // must be even number
+#define NUM_OF_REJECTED_BULKS 2 // reject first 2 bulks of data 
+
+unsigned char data[1024*BULKS_PER_TIME];
+float amplitude_data[16][16*BULKS_PER_TIME];  // 512byte has 2(byte per data point)*16(4 channel info + 12 amp info)*16(groups) data
+
+bool debug = TRUE;
+
+static unsigned char* localsys_bulk_transfer(CCyBulkEndPoint *BulkIn)
+{
+	unsigned char data_in[10240];
+	LONG bulksize = 10240;
+	//unsigned char buf2[2695680+192];
+	if (!BulkIn -> XferData(data_in, bulksize))
+	{
+		printf("Time Out or Error in Bulk transfer!\n");
+	}
+	//printf("%s\n", data_in);
+	/*if(debug)
+	{
+		for(int i=0;i<1024;i++)
+		{
+			printf("%02x  ", data_in[i]);
+			if((i+1)%16 == 0)
+			{
+				printf("\n");
+			}
+		}
+	}*/
+	return data_in;
+}
+
+
+void localsys_transfer_start(CCyBulkEndPoint *BulkIn)
+{
+	LONG bulksize = 512;
+	unsigned char data_collected[512];
+	int i = 0;
+	while(i<BULKS_PER_TIME)
+	{
+		memcpy(data_collected, localsys_bulk_transfer(BulkIn), bulksize);
+		if(i > -1) // reject first and secound bulks of data, true data is valid in and after the 3rd bulk.
+		{
+			memcpy(data + 512*i, data_collected, bulksize*sizeof(unsigned char)); // 512*BULKS_PER_TIME data saved to data[]
+		}
+		i++;
+	}
+}
+
+void localsys_data_for_separate_channel(unsigned char data[512*BULKS_PER_TIME])
+{
+	int i, flag[16] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};  // flag[i] is the current number of data in queue, i=0,1,2,...11, CHANNEL INFO IN DATA RECEIVED EQUALS [i+1]
+	int channel;
+	for(i=0;i<512*(BULKS_PER_TIME - NUM_OF_REJECTED_BULKS) - 1;i=i+2) 
+	{
+		channel = (data[i] & 0xF0)/16 - 1; 
+		if(data[i] & 0x08) // if the sign of the data is '1', negative
+		{
+			amplitude_data[channel][flag[channel]] = - (data[i] & 0x07) * (float)5/16 + data[i+1] * (float)5/4096;
+		}
+		else  
+			{
+				amplitude_data[channel][flag[channel]] = (data[i] & 0x07) * (float)5/16 + data[i+1] * (float)5/4096;
+			}
+		flag[channel]++;
+	}
+}
+
+void main(void) {
+	printf("%s\n", "Program starts.");
+	
+	//  Look for a device having VID = 05B4, PID = 1004 
+
+    CCyUSBDevice *USBDevice = new CCyUSBDevice();   //  Create an instance of CCyUSBDevice 
+    int devices = USBDevice->DeviceCount(); 
+    int vID, pID; 
+    int d = 0; 
+
+    do 
+	{ 
+        USBDevice->Open(d);   // Open automatically  calls Close() if necessary 
+        vID = USBDevice->VendorID; 
+        pID  = USBDevice->ProductID;
+        d++;             
+    }  
+	while ((d < devices ) && (vID != 0x04B4) &&  (pID != 0x1004)); 
+
+	if (d > devices) 
+	{
+		printf("%s\n", "No device found.");
+		exit(1);
+	}
+	else 
+	{
+		printf("%s\n", "Device found.");
+	}
+	
+	// Control Endpoint
+
+	/*CCyControlEndPoint *cept = USBDevice->ControlEndPt;     
+
+	cept->Target    = TGT_DEVICE; 
+	cept->ReqType   = REQ_VENDOR; 
+	cept->Direction = DIR_TO_DEVICE;  
+	cept->ReqCode   = 0xa2;   
+	cept->Value     = 0;  
+	cept->Index     = 0; 
+
+	unsigned char  buf;
+	LONG buflen = 0; 
+
+	cept->XferData(&buf,  buflen); */    
+
+	
+	// Bulk endpoint 
+	CCyBulkEndPoint *BulkIn = NULL; 
+	int  eptCount = USBDevice->EndPointCount(); 
+
+	for(int  i=1; i<eptCount;  i++) 
+	{ 
+		  bool bIn = USBDevice->EndPoints[i]->Address  & 0x80; 
+		  bool bBulk = (USBDevice->EndPoints[i]->Attributes == 2); 
+
+		  if (bBulk  && bIn) BulkIn = (CCyBulkEndPoint *) USBDevice->EndPoints[i];  // find bulk IN endpoint
+	} 
+
+
+	//BulkIn = (CCyBulkEndPoint *) USBDevice->EndPoints[3];  // find EP6 (in firmwire EP6 is the only valid IN endpoint)
+
+	// Transfer data
+	while(1)
+	{
+		//printf("Start collecting data? Y/N/E(xit)\n");
+		//char ifCollect_data = NULL;
+		//scanf_s("%c", &ifCollect_data);
+	
+		//if(ifCollect_data == (char)'Y')
+		//{
+			localsys_bulk_transfer(BulkIn);
+			//localsys_data_for_separate_channel(data);
+
+			//// debug output
+			//if(debug)
+			//{
+			//		for(int j=0;j<512*BULKS_PER_TIME;j++)
+			//		{
+			//			printf("[%d] %f\n", j, data[j]);
+			//		}
+			//		printf("\n");
+			//}
+	//	}
+	//	else if(ifCollect_data == (char)'E') 
+	//		{
+	//			USBDevice->~CCyUSBDevice();
+	//			exit(0);
+	//		}
+	}
+	
+	USBDevice->~CCyUSBDevice();
+	exit(0);
+	printf("%s\n", "Done");
+}

@@ -2,15 +2,19 @@
 #include <stdlib.h>
 #include <windows.h>
 #include <memory.h>
+#include <math.h>
 
 #include "CyApi.h"
 
-#define BULKS_PER_TIME 10
+#define BULKS_PER_TIME 4 // must be even number
+#define NUM_OF_REJECTED_BULKS 2 // reject first 2 bulks of data 
 
-unsigned char data[512*BULKS_PER_TIME];
-int ifcollect_data = 0;
+unsigned char data[512*(BULKS_PER_TIME - NUM_OF_REJECTED_BULKS)];
+float amplitude_data[16][16*BULKS_PER_TIME];  // 512byte has 2(byte per data point)*16(4 channel info + 12 amp info)*16(groups) data
 
-unsigned char* localsys_bulk_transfer(CCyBulkEndPoint *BulkIn)
+bool debug = TRUE;
+
+static unsigned char* localsys_bulk_transfer(CCyBulkEndPoint *BulkIn)
 {
 	unsigned char data_in[512];
 	LONG bulksize = 512;
@@ -19,25 +23,55 @@ unsigned char* localsys_bulk_transfer(CCyBulkEndPoint *BulkIn)
 	{
 		printf("Time Out or Error in Bulk transfer!\n");
 	}
-	printf("%s\n", data_in);
+	//printf("%s\n", data_in);
+	if(debug)
+	{
+		for(int i=0;i<512;i++)
+		{
+			printf("%02x  ", data_in[i]);
+			if((i+1)%16 == 0)
+			{
+				printf("\n");
+			}
+		}
+	}
 	return data_in;
 }
 
 
-unsigned char localsys_transfer_start(CCyBulkEndPoint *BulkIn)
+void localsys_transfer_start(CCyBulkEndPoint *BulkIn)
 {
 	LONG bulksize = 512;
 	unsigned char data_collected[512];
 	int i = 0;
-	while(i<12)
+	while(i<BULKS_PER_TIME)
 	{
 		memcpy(data_collected, localsys_bulk_transfer(BulkIn), bulksize);
-		if(i>1) // reject first and secound bulks of data, true data is valid in and after the 3rd bulk.
+		if(i > NUM_OF_REJECTED_BULKS - 1) // reject first and secound bulks of data, true data is valid in and after the 3rd bulk.
 		{
-			memcpy(data + 512*(i-2), data_collected, bulksize); // 512*BULKS_PER_TIME data saved to data[]
+			memcpy(data + 512*(i-2), data_collected, bulksize*sizeof(unsigned char)); // 512*BULKS_PER_TIME data saved to data[]
 		}
+		i++;
 	}
-	return data[512*BULKS_PER_TIME];
+}
+
+void localsys_data_for_separate_channel(unsigned char data[512*BULKS_PER_TIME])
+{
+	int i, flag[16] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};  // flag[i] is the current number of data in queue, i=0,1,2,...11, CHANNEL INFO IN DATA RECEIVED EQUALS [i+1]
+	int channel;
+	for(i=0;i<512*(BULKS_PER_TIME - NUM_OF_REJECTED_BULKS) - 1;i=i+2) 
+	{
+		channel = (data[i] & 0xF0)/16 - 1; 
+		if(data[i] & 0x08) // if the sign of the data is '1', negative
+		{
+			amplitude_data[channel][flag[channel]] = - (data[i] & 0x07) * (float)5/16 + data[i+1] * (float)5/4096;
+		}
+		else  
+			{
+				amplitude_data[channel][flag[channel]] = (data[i] & 0x07) * (float)5/16 + data[i+1] * (float)5/4096;
+			}
+		flag[channel]++;
+	}
 }
 
 void main(void) {
@@ -102,21 +136,36 @@ void main(void) {
 	BulkIn = (CCyBulkEndPoint *) USBDevice->EndPoints[3];  // find EP6 (in firmwire EP6 is the only valid IN endpoint)
 
 	// Transfer data
-
-Transfer_loop:
-	printf("Start collecting data? Y/N/E(xit)\n");
-	char ifCollect_data = NULL;
-	scanf("%c", &ifCollect_data);
-	
-	if(ifCollect_data == (char)'Y')
+	while(1)
 	{
-		localsys_transfer_start(BulkIn);
-		goto Transfer_loop;
-	}
-	else if(ifCollect_data == (char)'E') 
+		printf("Start collecting data? Y/N/E(xit)\n");
+		char ifCollect_data = NULL;
+		scanf_s("%c", &ifCollect_data);
+	
+		if(ifCollect_data == (char)'Y')
 		{
-			exit(0);
-		}
+			localsys_transfer_start(BulkIn);
+			localsys_data_for_separate_channel(data);
 
+			// debug output
+			if(debug)
+			{
+				for(int i=0;i<4;i++)
+				{
+					for(int j=0;j<16*BULKS_PER_TIME;j++)
+					{
+						printf("[%d][%d] %f\n", i, j, amplitude_data[i][j]);
+					}
+					printf("\n");
+				}
+			}
+		}
+		else if(ifCollect_data == (char)'E') 
+			{
+				USBDevice->~CCyUSBDevice();
+				exit(0);
+			}
+	}
+	
 	printf("%s\n", "Done");
 }
